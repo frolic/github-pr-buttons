@@ -7,3 +7,5 @@
 .github-pr-buttons-run:focus-within [data-pr-run-action] {
 	visibility: visible;
 }
+
+/* Demo change for the test PR. */
