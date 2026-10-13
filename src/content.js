@@ -126,6 +126,32 @@ function saveSnapshot(state) {
 // The commit of each run seen on a head, or dispatched from here.
 const runShas = persistentCache('runShas', 2000)
 
+// The default branch's config text for each repo, or null when it has none.
+// A PR without a snapshot shows these buttons, disabled, until its own load.
+const defaultConfigs = persistentCache('defaultConfigs', 100)
+
+async function refreshDefaultConfig(owner, repo) {
+	const response = await fetch(`/${owner}/${repo}/raw/HEAD/${CONFIG_PATH}`)
+	if (response.ok) defaultConfigs.set(`${owner}/${repo}`, await response.text())
+	else if (response.status === 404) defaultConfigs.set(`${owner}/${repo}`, null)
+}
+
+async function provisionalState(state) {
+	const snapshot = await snapshots.get(state.key)
+	if (snapshot) return { ...snapshot, workflowNames: new Map(snapshot.workflowNames) }
+	const { owner, repo } = state
+	refreshDefaultConfig(owner, repo).catch(() => {})
+	const text = await defaultConfigs.get(`${owner}/${repo}`)
+	if (!text) return null
+	try {
+		const config = parseConfig(parse(text))
+		for (const button of config.buttons) button.matched = !Array.isArray(button.paths)
+		return { config, provisional: true }
+	} catch {
+		return null
+	}
+}
+
 async function fetchPage(path) {
 	const response = await fetch(path)
 	if (!response.ok) throw new Error(`${path} returned ${response.status}.`)
@@ -163,20 +189,27 @@ function ensure() {
 		// Turbo restores back/forward visits from a snapshot, which can carry a stale item.
 		document.getElementById(ITEM_ID)?.remove()
 		const state = current
-		snapshots.get(state.key).then((snapshot) => {
-			if (!snapshot || state !== current || state.phase !== 'loading') return
-			update({ ...snapshot, workflowNames: new Map(snapshot.workflowNames), phase: 'ready' })
+		provisionalState(state).then((provisional) => {
+			if (!provisional || state !== current || state.phase !== 'loading') return
+			update({ ...provisional, phase: 'ready' })
 		})
 		load(state)
 	}
 	const sidebar = document.getElementById('partial-discussion-sidebar')
 	if (!sidebar || current.phase === 'loading' || current.phase === 'hidden') return
-	if (document.getElementById(ITEM_ID)) return
+	// The section sits right above "Notifications". While the page still
+	// parses, that item can be missing only because it has not arrived yet.
+	const notifications = sidebar.querySelector(':scope > .sidebar-notifications')
+	if (!notifications && document.readyState === 'loading') return
+	const existing = document.getElementById(ITEM_ID)
+	if (existing) {
+		if (notifications && existing.nextElementSibling !== notifications) notifications.before(existing)
+		return
+	}
 	const item = document.createElement('div')
 	item.id = ITEM_ID
 	item.className = 'discussion-sidebar-item'
-	const development = sidebar.querySelector(':scope > create-branch')
-	if (development) development.after(item)
+	if (notifications) notifications.before(item)
 	else sidebar.append(item)
 	render()
 }
@@ -226,7 +259,7 @@ async function load(state) {
 		snapshots.set(state.key, null)
 		return update({ phase: 'hidden' })
 	}
-	update({ phase: 'ready', config, workflowNames })
+	update({ phase: 'ready', provisional: false, config, workflowNames })
 	refreshRuns(state, runPages)
 }
 
@@ -612,7 +645,7 @@ function buttonRow(state, button, index) {
 		button.problem ??
 		(state.fork ? 'Workflows cannot be dispatched on a fork branch.' : (button.description ?? ''))
 	return html`<div class="mb-2">
-		<button type="button" class="btn btn-sm btn-block" data-pr-button=${index} ?disabled=${pending || state.fork || !!button.problem} title=${title}>
+		<button type="button" class="btn btn-sm btn-block" data-pr-button=${index} ?disabled=${pending || state.fork || state.provisional || !!button.problem} title=${title}>
 			${pending ? html`${spinner()} ` : ''}${button.label}
 		</button>
 		${error ? html`<div class="f6 color-fg-danger mt-1">${error}</div>` : ''}
@@ -673,4 +706,6 @@ new MutationObserver(() => {
 		ensure()
 	})
 }).observe(document.documentElement, { childList: true, subtree: true })
+// Without a later DOM change, the end of parsing must still mount the section.
+document.addEventListener('DOMContentLoaded', ensure)
 ensure()
