@@ -1,0 +1,22 @@
+name: Benchmarks
+
+# Demo workflow for the extension's test PR. One job fails on purpose, so
+# the PR shows a failed run that can be re-run.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  cold-start:
+    name: Cold start
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 15
+  render:
+    name: Render 10k shapes
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          sleep 20
+          echo "::error::Render took 412 ms, over the 350 ms budget."
+          exit 1

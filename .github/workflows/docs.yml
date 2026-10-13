@@ -1,0 +1,13 @@
+name: Docs
+
+# Demo workflow for the extension's test PR. Its jobs only sleep.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  publish:
+    name: Publish docs
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 15

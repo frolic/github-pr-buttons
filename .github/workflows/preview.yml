@@ -1,0 +1,16 @@
+name: Preview deploy
+
+# Demo workflow for the extension's test PR. Its jobs only sleep.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy preview
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build
+        run: sleep 20
+      - name: Deploy
+        run: sleep 10
