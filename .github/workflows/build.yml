@@ -71,6 +71,8 @@ jobs:
             exit 1
           fi
           if gh release view "$TAG" >/dev/null 2>&1; then
+            # Move the tag too, so the release's source archives match the zip.
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true >/dev/null
             gh release upload "$TAG" dist/github-pr-buttons.zip --clobber
             gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
           else
