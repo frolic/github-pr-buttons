@@ -1,4 +1,4 @@
-# GitHub PR Buttons
+# <img src="store/icon-1024.png" width="36" alt="" align="top"> GitHub PR Buttons
 
 <img align="right" src="docs/sidebar.png" width="320" alt="The Workflows section in a pull request sidebar: three buttons, a collapsed Other workflows section, and a list of runs with their status">
 
