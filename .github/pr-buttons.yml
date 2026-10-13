@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/frolic/github-pr-buttons/main/schema.json
+# Test buttons for trying the extension on this repo's own PRs.
+
+buttons:
+  - label: Sleep
+    workflow: test-sleep.yml
+    description: A run that stays in progress for two minutes.
+    inputs:
+      seconds: '120'
+  - label: Fail
+    workflow: test-fail.yml
+    description: A run where one job fails.
+  - label: Only for src changes
+    workflow: test-sleep.yml
+    inputs:
+      seconds: '5'
+    paths:
+      - 'src/**'

@@ -1,0 +1,19 @@
+name: Test sleep
+
+# For trying the extension on this repo's own PRs: a run that stays in
+# progress long enough to cancel.
+
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: How long to sleep.
+        type: string
+        default: '120'
+
+jobs:
+  sleep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - run: sleep "${{ inputs.seconds }}"
