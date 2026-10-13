@@ -161,7 +161,9 @@ async function fetchPage(path) {
 function prFromLocation() {
 	const match = location.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)(?:\/|$)/)
 	if (!match) return null
-	const [, owner, repo, number] = match
+	// GitHub ignores case in owner and repo names, so the caches do too.
+	const [owner, repo] = [match[1].toLowerCase(), match[2].toLowerCase()]
+	const number = match[3]
 	return { owner, repo, number, key: `${owner}/${repo}#${number}` }
 }
 
@@ -229,7 +231,9 @@ async function load(state) {
 	}
 	state.head = pr.comparison.headOid
 	state.branch = pr.headBranch
-	state.fork = pr.headRepositoryOwnerLogin !== owner || pr.headRepositoryName !== repo
+	state.fork =
+		pr.headRepositoryOwnerLogin?.toLowerCase() !== owner ||
+		pr.headRepositoryName?.toLowerCase() !== repo
 
 	const file = await readFile(owner, repo, state.head, CONFIG_PATH)
 	if (state !== current) return

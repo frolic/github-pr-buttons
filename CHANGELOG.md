@@ -2,11 +2,10 @@
 
 ## v0.1.0
 
-First release.
+GitHub PR Buttons adds a **Workflows** section to the pull request sidebar on github.com. A repo lists buttons in `.github/pr-buttons.yml`, and each button runs a workflow on the PR's branch, then opens the new run. Use it for workflows you run on demand: slow test suites, snapshot updates, staging deploys.
 
-- A **Workflows** section in the pull request sidebar, built from `.github/pr-buttons.yml` at the PR's head commit. Each button dispatches its workflow on the head branch, shows a spinner, and then opens the new run.
-- Buttons with `paths` that match none of the PR's changed files move under a collapsed **Other workflows** section. The rules are the same as a workflow's `on.pull_request.paths`.
-- A list of the latest dispatched runs of those workflows on the head commit, whoever started them, because `workflow_dispatch` runs do not show in the PR's checks. Runs on older commits are under **Other runs**. On hover, each run can be cancelled or re-run.
-- Each button is checked against its workflow when the page loads. A button whose workflow is missing, has no `workflow_dispatch` trigger, or does not match its inputs is disabled, with the reason under it.
-- No token to set: the extension uses your github.com session, the same pages and forms as the Actions tab.
-- `schema.json`, a JSON Schema for `.github/pr-buttons.yml`, for checking and completion in editors.
+Below the buttons is a list of the runs those workflows made on the PR's branch, with cancel and re-run on hover. There is no token to set up: the extension uses your github.com session.
+
+**Install:** download `github-pr-buttons.zip` below and unzip it. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and select the unzipped folder.
+
+**Set up a repo:** see the [README](https://github.com/frolic/github-pr-buttons#configure-a-repo).
