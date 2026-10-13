@@ -1,0 +1,9 @@
+/* Run controls show on hover or keyboard focus. A control whose request is in
+   flight stays visible, so its spinner shows. */
+.github-pr-buttons-run [data-pr-run-action]:not(:disabled) {
+	visibility: hidden;
+}
+.github-pr-buttons-run:hover [data-pr-run-action],
+.github-pr-buttons-run:focus-within [data-pr-run-action] {
+	visibility: visible;
+}

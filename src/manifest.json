@@ -1,0 +1,23 @@
+{
+	"manifest_version": 3,
+	"name": "GitHub PR Buttons",
+	"version": "0.1.0",
+	"description": "Buttons in the pull request sidebar that dispatch the workflows a repo lists in .github/pr-buttons.yml.",
+	"permissions": ["storage"],
+	"host_permissions": ["https://api.github.com/*"],
+	"background": {
+		"service_worker": "background.js"
+	},
+	"options_ui": {
+		"page": "options.html",
+		"open_in_tab": false
+	},
+	"content_scripts": [
+		{
+			"matches": ["https://github.com/*"],
+			"js": ["content.js"],
+			"run_at": "document_idle",
+			"css": ["content.css"]
+		}
+	]
+}

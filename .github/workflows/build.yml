@@ -1,0 +1,68 @@
+name: Build
+
+# - On main: publishes the extension zip as the release for the manifest
+#   version (v<version>). Bump the version in src/manifest.json for a new
+#   release; pushes without a bump rebuild that release's zip.
+# - On a PR: uploads the unpacked extension as a workflow artifact and links it
+#   from a sticky PR comment, as a preview build.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Upload preview
+        id: preview
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: github-pr-buttons-pr-${{ github.event.pull_request.number }}
+          path: dist/extension/
+
+      - name: Comment preview link
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: preview
+          message: |
+            **Preview build** for ${{ github.event.pull_request.head.sha }}: [download](${{ steps.preview.outputs.artifact-url }})
+
+            Unzip it, then load the folder at `chrome://extensions` with **Load unpacked**, or replace the contents of the folder you loaded before and click reload on the extension's card.
+
+      - name: Publish release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v$(jq -r .version src/manifest.json)"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/github-pr-buttons.zip --clobber
+          else
+            gh release create "$TAG" dist/github-pr-buttons.zip --title "$TAG" --generate-notes
+          fi
