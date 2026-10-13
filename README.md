@@ -1,6 +1,6 @@
 # GitHub PR Buttons
 
-<img align="right" src="docs/sidebar.png" width="280" alt="The Workflows section in a pull request sidebar: three buttons, a collapsed Other workflows section, and a list of runs with their status">
+<img align="right" src="docs/sidebar.png" width="330" alt="The Workflows section in a pull request sidebar: three buttons, a collapsed Other workflows section, and a list of runs with their status">
 
 A Chrome extension that adds a **Workflows** section to the pull request sidebar on github.com. A repo lists buttons in `.github/pr-buttons.yml`. Each button dispatches a workflow on the PR's head branch and then opens the new run.
 
