@@ -2,12 +2,13 @@
 	"manifest_version": 3,
 	"name": "GitHub PR Buttons",
 	"version": "0.1.0",
+	"permissions": ["storage"],
 	"description": "Buttons in the pull request sidebar that dispatch the workflows a repo lists in .github/pr-buttons.yml.",
 	"content_scripts": [
 		{
 			"matches": ["https://github.com/*"],
 			"js": ["content.js"],
-			"run_at": "document_idle",
+			"run_at": "document_start",
 			"css": ["content.css"]
 		}
 	]

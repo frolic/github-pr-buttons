@@ -43,29 +43,88 @@ const CROSS =
 
 let current = null
 
-// Files at a commit never change, so a read is kept for the page's lifetime.
-// Turbo keeps the page alive across visits to other PRs.
-const files = new Map()
-
-function readFile(owner, repo, sha, path) {
-	const key = `${owner}/${repo}@${sha}:${path}`
-	if (!files.has(key)) {
-		const read = fetch(`/${owner}/${repo}/raw/${sha}/${path}`).then(async (response) => ({
-			status: response.status,
-			text: response.ok ? await response.text() : null,
-		}))
-		files.set(key, read)
-		// Other failures can be transient, so they are read again next time.
-		read.then(
-			({ status }) => status === 200 || status === 404 || files.delete(key),
-			() => files.delete(key)
-		)
+// Caches of things that never change, kept across page loads in the
+// extension's storage. Each is a Map in least-recently-used order, so the
+// oldest entries go when it is full. Tabs share it, and the last tab to save
+// wins, which only loses cache entries.
+function persistentCache(name, limit) {
+	const ready = chrome.storage.local.get(name).then(
+		(stored) => new Map(stored[name] ?? []),
+		() => new Map()
+	)
+	let timer = 0
+	const save = (map) => {
+		clearTimeout(timer)
+		timer = setTimeout(() => {
+			while (map.size > limit) map.delete(map.keys().next().value)
+			chrome.storage.local.set({ [name]: [...map] }).catch(() => {})
+		}, 1000)
 	}
-	return files.get(key)
+	const touch = (map, key, value) => {
+		map.delete(key)
+		map.set(key, value)
+		save(map)
+	}
+	return {
+		async get(key) {
+			const map = await ready
+			if (!map.has(key)) return undefined
+			const value = map.get(key)
+			touch(map, key, value)
+			return value
+		},
+		async set(key, value) {
+			touch(await ready, key, value)
+		},
+	}
 }
 
-// The last runs listed for each PR, shown while the list refreshes.
-const lastRuns = new Map()
+// Files by commit. Only a read or a 404 is kept; other failures can be
+// transient.
+const files = persistentCache('files', 200)
+const fileReads = new Map()
+
+async function readFile(owner, repo, sha, path) {
+	const key = `${owner}/${repo}@${sha}:${path}`
+	const cached = await files.get(key)
+	if (cached) return cached
+	if (!fileReads.has(key)) {
+		fileReads.set(
+			key,
+			fetch(`/${owner}/${repo}/raw/${sha}/${path}`)
+				.then(async (response) => ({
+					status: response.status,
+					text: response.ok ? await response.text() : null,
+				}))
+				.finally(() => fileReads.delete(key))
+		)
+	}
+	const file = await fileReads.get(key)
+	if (file.status === 200 || file.status === 404) files.set(key, file)
+	return file
+}
+
+// The last state of each PR's section, shown as soon as the sidebar exists
+// while the page's data loads. Runs keep no forms, so their controls wait for
+// the refresh.
+const snapshots = persistentCache('snapshots', 100)
+
+function saveSnapshot(state) {
+	const runs = (list) => list.map((run) => ({ ...run, cancelForm: null }))
+	snapshots.set(state.key, {
+		head: state.head,
+		branch: state.branch,
+		fork: state.fork,
+		config: state.config,
+		workflowNames: [...state.workflowNames],
+		runs: runs(state.runs),
+		olderRuns: runs(state.olderRuns),
+		dispatched: state.dispatched,
+	})
+}
+
+// The commit of each run seen on a head, or dispatched from here.
+const runShas = persistentCache('runShas', 2000)
 
 async function fetchPage(path) {
 	const response = await fetch(path)
@@ -95,7 +154,7 @@ function ensure() {
 			errors: {},
 			runs: [],
 			olderRuns: [],
-			...lastRuns.get(target.key),
+			dispatched: [],
 			runsPending: new Set(),
 			runsError: null,
 			workflowNames: new Map(),
@@ -103,7 +162,12 @@ function ensure() {
 		}
 		// Turbo restores back/forward visits from a snapshot, which can carry a stale item.
 		document.getElementById(ITEM_ID)?.remove()
-		load(current)
+		const state = current
+		snapshots.get(state.key).then((snapshot) => {
+			if (!snapshot || state !== current || state.phase !== 'loading') return
+			update({ ...snapshot, workflowNames: new Map(snapshot.workflowNames), phase: 'ready' })
+		})
+		load(state)
 	}
 	const sidebar = document.getElementById('partial-discussion-sidebar')
 	if (!sidebar || current.phase === 'loading' || current.phase === 'hidden') return
@@ -136,40 +200,53 @@ async function load(state) {
 
 	const file = await readFile(owner, repo, state.head, CONFIG_PATH)
 	if (state !== current) return
-	if (file.status === 404) return update({ phase: 'hidden' })
+	if (file.status === 404) {
+		snapshots.set(state.key, null)
+		return update({ phase: 'hidden' })
+	}
 	if (!file.text) return update({ phase: 'error', message: `Cannot read ${CONFIG_PATH} (${file.status}).` })
+	let config
 	try {
-		state.config = parseConfig(parse(file.text))
+		config = parseConfig(parse(file.text))
 	} catch (error) {
 		return update({ phase: 'error', message: `Invalid ${CONFIG_PATH}: ${error.message}` })
 	}
-	if (state !== current) return
-	await checkWorkflows(state)
+	// The run list loads while the workflows are checked.
+	const runPages = fetchRunPages(state)
+	runPages.catch(() => {})
+	const workflowNames = await checkWorkflows(state, config)
 	if (state !== current) return
 	// A rename lists only its new path.
 	const files = route.diffSummaries.map((summary) => summary.path)
-	for (const button of state.config.buttons) {
+	for (const button of config.buttons) {
 		button.matched =
 			!Array.isArray(button.paths) || files.some((file) => matchesPaths(file, button.paths))
 	}
-	if (state.config.buttons.length === 0) return update({ phase: 'hidden' })
-	update({ phase: 'ready' })
-	refreshRuns(state)
+	if (config.buttons.length === 0) {
+		snapshots.set(state.key, null)
+		return update({ phase: 'hidden' })
+	}
+	update({ phase: 'ready', config, workflowNames })
+	refreshRuns(state, runPages)
 }
 
 // Dispatch runs never show in the PR's checks, so the section lists every
 // dispatch run on the branch, whoever started it. The list rows carry no
 // commit, so the head commit's checks page says which runs are on the head.
-async function refreshRuns(state) {
-	clearTimeout(state.timer)
+function fetchRunPages(state) {
 	const { owner, repo } = state
 	const query = encodeURIComponent(`branch:${state.branch} event:workflow_dispatch`)
+	return Promise.all([
+		fetchPage(`/${owner}/${repo}/actions?query=${query}`),
+		fetchPage(`/${owner}/${repo}/commit/${state.head}/checks`),
+	])
+}
+
+async function refreshRuns(state, pages = fetchRunPages(state)) {
+	clearTimeout(state.timer)
 	let list, checks
 	try {
-		;[list, checks] = await Promise.all([
-			fetchPage(`/${owner}/${repo}/actions?query=${query}`),
-			fetchPage(`/${owner}/${repo}/commit/${state.head}/checks`),
-		])
+		;[list, checks] = await pages
 	} catch (error) {
 		if (state !== current) return
 		state.runsError = `Cannot read workflow runs: ${error.message}`
@@ -177,20 +254,29 @@ async function refreshRuns(state) {
 	}
 	if (state !== current) return
 	const names = new Set(state.workflowNames.values())
-	const runs = [...list.querySelectorAll('.Box-row[id^="check_suite_"]')]
+	const listed = [...list.querySelectorAll('.Box-row[id^="check_suite_"]')]
 		.map(parseRunRow)
 		.filter((run) => run && names.has(run.name))
-	const onHead = new Set(
-		[...checks.querySelectorAll('[id^="sidebar_check_suite_"] a[href*="/actions/runs/"]')].map(
-			(link) => runId(link.getAttribute('href'))
-		)
-	)
+	// A run this tab dispatched stays listed until the run list has it.
+	state.dispatched = state.dispatched.filter((run) => !listed.some(({ id }) => id === run.id))
+	const runs = [...state.dispatched, ...listed]
+	for (const link of checks.querySelectorAll(
+		'[id^="sidebar_check_suite_"] a[href*="/actions/runs/"]'
+	)) {
+		runShas.set(runId(link.getAttribute('href')), state.head)
+	}
+	const shas = new Map(await Promise.all(runs.map(async (run) => [run.id, await runShas.get(run.id)])))
+	if (state !== current) return
+	const onHead = (run) => shas.get(run.id) === state.head
 	state.runsError = null
-	state.runs = runs.filter((run) => onHead.has(run.id)).slice(0, RUNS_SHOWN)
-	state.olderRuns = runs.filter((run) => !onHead.has(run.id)).slice(0, RUNS_SHOWN)
-	lastRuns.set(state.key, { runs: state.runs, olderRuns: state.olderRuns })
+	state.runs = runs.filter(onHead).slice(0, RUNS_SHOWN)
+	state.olderRuns = runs.filter((run) => !onHead(run)).slice(0, RUNS_SHOWN)
+	saveSnapshot(state)
 	render()
-	if ([...state.runs, ...state.olderRuns].some((run) => run.status !== 'completed')) {
+	if (
+		state.dispatched.length ||
+		[...state.runs, ...state.olderRuns].some((run) => run.status !== 'completed')
+	) {
 		state.timer = setTimeout(() => refreshRuns(state), RUNS_POLL_MS)
 	}
 }
@@ -260,10 +346,12 @@ function parseConfig(json) {
 
 // Reads each workflow at the PR head and checks the button can dispatch it.
 // A workflow that cannot be read for another reason is left to fail on click.
-// The run list names runs by the workflow's `name`, which defaults to its path.
-async function checkWorkflows(state) {
+// Returns each workflow's `name`, which defaults to its path: the run list
+// names runs by it.
+async function checkWorkflows(state, config) {
 	const { owner, repo, head } = state
-	const buttons = state.config.buttons.filter((button) => !button.problem)
+	const names = new Map()
+	const buttons = config.buttons.filter((button) => !button.problem)
 	const workflows = await Promise.all(
 		[...new Set(buttons.map((button) => button.workflow))].map(async (workflow) => {
 			const path = `.github/workflows/${workflow}`
@@ -272,7 +360,7 @@ async function checkWorkflows(state) {
 			if (!file.text) return [workflow, null]
 			try {
 				const yaml = parse(file.text)
-				state.workflowNames.set(workflow, typeof yaml?.name === 'string' ? yaml.name : path)
+				names.set(workflow, typeof yaml?.name === 'string' ? yaml.name : path)
 				return [workflow, { yaml }]
 			} catch {
 				return [workflow, { invalid: true }]
@@ -311,6 +399,7 @@ async function checkWorkflows(state) {
 			button.problem = `Missing required input ${missing.join(', ')}.`
 		}
 	}
+	return names
 }
 
 // Same rules as a workflow's `on.pull_request.paths`: the last pattern that
@@ -385,6 +474,18 @@ async function dispatch(state, button, index) {
 		const run = result.redirected ? runId(new URL(result.url).pathname) : null
 		if (!run) return fail(`Dispatch failed (${result.status}).`)
 		if (state !== current) return
+		// The run is on the branch's head at dispatch time.
+		runShas.set(run, state.head)
+		state.dispatched.unshift({
+			id: run,
+			name: state.workflowNames.get(button.workflow),
+			html_url: `/${owner}/${repo}/actions/runs/${run}`,
+			created_at: new Date().toISOString(),
+			label: 'Queued',
+			status: 'queued',
+			conclusion: null,
+			cancelForm: null,
+		})
 		location.assign(`/${owner}/${repo}/actions/runs/${run}`)
 	} catch (error) {
 		fail(`Dispatch failed: ${error.message}`)
@@ -555,6 +656,14 @@ function runStatus(run) {
 
 document.addEventListener('click', onClick)
 
+// Back from a dispatched run, the browser can restore this page as it was
+// left: spinners on and the runs from before the dispatch.
+addEventListener('pageshow', (event) => {
+	if (!event.persisted || current?.phase !== 'ready') return
+	current.pending.clear()
+	refreshRuns(current)
+})
+
 let scheduled = false
 new MutationObserver(() => {
 	if (scheduled) return
@@ -563,5 +672,5 @@ new MutationObserver(() => {
 		scheduled = false
 		ensure()
 	})
-}).observe(document.body, { childList: true, subtree: true })
+}).observe(document.documentElement, { childList: true, subtree: true })
 ensure()
