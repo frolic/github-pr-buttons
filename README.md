@@ -8,7 +8,7 @@ Below the buttons is a list of the latest dispatched runs of those workflows on 
 
 ## Install
 
-1. Download `github-pr-buttons.zip` from the [latest release](https://github.com/frolic/github-pr-buttons/releases/latest) and unzip it.
+1. Download [`github-pr-buttons.zip`](https://github.com/frolic/github-pr-buttons/releases/latest/download/github-pr-buttons.zip) from the latest release and unzip it.
 2. Open `chrome://extensions`, turn on **Developer mode**, and click **Load unpacked**. Select the unzipped folder.
 
 There is no token to set. The extension uses your github.com session: it reads the same pages and submits the same forms as the Actions tab, so it can do what you can do there, and runs are attributed to you. It sends nothing anywhere but github.com.
