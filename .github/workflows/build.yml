@@ -1,8 +1,9 @@
 name: Build
 
 # - On main: publishes the extension zip as the release for the manifest
-#   version (v<version>). Bump the version in src/manifest.json for a new
-#   release; pushes without a bump rebuild that release's zip.
+#   version (v<version>), with that version's CHANGELOG.md section as its
+#   notes. For a new release, bump the version in src/manifest.json and add a
+#   section; pushes without a bump rebuild that release's zip and notes.
 # - On a PR: uploads the unpacked extension as a workflow artifact and links it
 #   from a sticky PR comment, as a preview build.
 
@@ -55,14 +56,22 @@ jobs:
 
             Unzip it, then load the folder at `chrome://extensions` with **Load unpacked**, or replace the contents of the folder you loaded before and click reload on the extension's card.
 
+      # The release notes are the version's section of CHANGELOG.md: from its
+      # "## v<version>" heading to the next "## " heading.
       - name: Publish release
         if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v$(jq -r .version src/manifest.json)"
+          awk -v tag="## $TAG" '$0 == tag { found = 1; next } found && /^## / { exit } found' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "::error::CHANGELOG.md has no section for $TAG"
+            exit 1
+          fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/github-pr-buttons.zip --clobber
+            gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
           else
-            gh release create "$TAG" dist/github-pr-buttons.zip --title "$TAG" --generate-notes
+            gh release create "$TAG" dist/github-pr-buttons.zip --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
           fi
