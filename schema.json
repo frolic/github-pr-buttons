@@ -1,0 +1,49 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"$id": "https://raw.githubusercontent.com/frolic/github-pr-buttons/main/schema.json",
+	"title": "GitHub PR Buttons config",
+	"description": "Buttons in the pull request sidebar, from .github/pr-buttons.yml. Each one dispatches a workflow on the PR's head branch. See https://github.com/frolic/github-pr-buttons",
+	"type": "object",
+	"required": ["buttons"],
+	"additionalProperties": false,
+	"properties": {
+		"buttons": {
+			"type": "array",
+			"items": { "$ref": "#/definitions/button" }
+		}
+	},
+	"definitions": {
+		"button": {
+			"type": "object",
+			"required": ["label", "workflow"],
+			"additionalProperties": false,
+			"properties": {
+				"label": {
+					"description": "The button text.",
+					"type": "string",
+					"minLength": 1
+				},
+				"workflow": {
+					"description": "The workflow file name in .github/workflows, without a directory. The workflow must have a workflow_dispatch trigger.",
+					"type": "string",
+					"pattern": "^[^/]+\\.ya?ml$"
+				},
+				"description": {
+					"description": "The button's tooltip.",
+					"type": "string"
+				},
+				"inputs": {
+					"description": "workflow_dispatch inputs, by name.",
+					"type": "object",
+					"additionalProperties": { "type": ["string", "number", "boolean"] }
+				},
+				"paths": {
+					"description": "When the PR changes no matching file, the button moves into the collapsed \"Other workflows\" section. Same rules as a workflow's on.pull_request.paths: * does not match /, ** does, a pattern that starts with ! excludes, and the last pattern that matches a file decides.",
+					"type": "array",
+					"minItems": 1,
+					"items": { "type": "string", "minLength": 1 }
+				}
+			}
+		}
+	}
+}

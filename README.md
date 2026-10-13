@@ -24,6 +24,7 @@ To update, download the zip again, replace the folder's contents, and click the 
 Add `.github/pr-buttons.yml`. The extension reads it from the PR's head commit, so a PR can add or change its own buttons.
 
 ```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/frolic/github-pr-buttons/main/schema.json
 buttons:
   - label: Render screenshots
     workflow: screenshots.yml
@@ -34,6 +35,8 @@ buttons:
       - 'apps/web/**'
       - '!**/*.md'
 ```
+
+The first line points editors at [`schema.json`](schema.json): VS Code with the YAML extension and JetBrains IDEs then check the file and complete its fields as you type.
 
 - `label`: the button text.
 - `workflow`: the workflow file name in `.github/workflows/`. The workflow must have a `workflow_dispatch` trigger.
