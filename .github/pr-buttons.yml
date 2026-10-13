@@ -2,26 +2,25 @@
 # Demo buttons for this repo's test PR. The workflows only sleep.
 
 buttons:
-  - label: Run e2e tests
-    workflow: e2e.yml
-    description: Three shards in Chromium.
+  - label: Run integration tests
+    workflow: integration-tests.yml
+    description: Three shards against real services.
     paths: &app
       - 'src/**'
       - '!**/*.md'
-  - label: Render screenshots
-    workflow: screenshots.yml
-    description: macOS, Windows and Linux.
-    inputs:
-      platforms: macos,windows,linux
+  - label: Update snapshots
+    workflow: update-snapshots.yml
+    description: Re-records snapshots and commits them to this branch.
     paths: *app
-  - label: Deploy preview
-    workflow: preview.yml
-    description: Deploys this branch to a preview URL.
-  - label: Run benchmarks
-    workflow: benchmarks.yml
+  - label: Deploy to staging
+    workflow: deploy-staging.yml
+    inputs:
+      environment: staging
+  - label: Run load test
+    workflow: load-test.yml
     paths:
-      - 'bench/**'
-  - label: Publish docs
-    workflow: docs.yml
+      - 'server/**'
+  - label: Check database migrations
+    workflow: database-migration-check.yml
     paths:
-      - 'docs/**'
+      - 'migrations/**'

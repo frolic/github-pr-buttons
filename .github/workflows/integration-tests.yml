@@ -1,17 +1,13 @@
-name: E2E tests
+name: Integration tests
 
 # Demo workflow for the extension's test PR. Its jobs only sleep.
 
 on:
   workflow_dispatch:
-    inputs:
-      browser:
-        description: Browser to run in
-        default: chromium
 
 jobs:
-  e2e:
-    name: E2E (${{ inputs.browser }}, shard ${{ matrix.shard }}/3)
+  test:
+    name: Integration tests (shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -19,7 +15,7 @@ jobs:
     steps:
       - name: Install dependencies
         run: sleep 10
-      - name: Build
+      - name: Start services
         run: sleep 15
       - name: Run tests
-        run: sleep $((60 + ${{ matrix.shard }} * 20))
+        run: sleep $((120 + ${{ matrix.shard }} * 30))

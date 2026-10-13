@@ -1,4 +1,4 @@
-name: Docs
+name: Database migration check
 
 # Demo workflow for the extension's test PR. Its jobs only sleep.
 
@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  publish:
-    name: Publish docs
+  check:
+    name: Run migrations against a copy of production
     runs-on: ubuntu-latest
     steps:
       - run: sleep 15

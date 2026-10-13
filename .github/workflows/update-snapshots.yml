@@ -1,0 +1,16 @@
+name: Update snapshots
+
+# Demo workflow for the extension's test PR. Its jobs only sleep.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  update:
+    name: Update snapshots
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run tests with --update-snapshots
+        run: sleep 240
+      - name: Commit changed snapshots
+        run: sleep 5
