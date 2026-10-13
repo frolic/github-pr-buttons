@@ -1,18 +1,26 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/frolic/github-pr-buttons/main/schema.json
-# Test buttons for trying the extension on this repo's own PRs.
+# Demo buttons for this repo's test PR. The workflows only sleep.
 
 buttons:
-  - label: Sleep
-    workflow: test-sleep.yml
-    description: A run that stays in progress for two minutes.
-    inputs:
-      seconds: '120'
-  - label: Fail
-    workflow: test-fail.yml
-    description: A run where one job fails.
-  - label: Only for src changes
-    workflow: test-sleep.yml
-    inputs:
-      seconds: '5'
-    paths:
+  - label: Run integration tests
+    workflow: integration-tests.yml
+    description: Three shards against real services.
+    paths: &app
       - 'src/**'
+      - '!**/*.md'
+  - label: Update snapshots
+    workflow: update-snapshots.yml
+    description: Re-records snapshots and commits them to this branch.
+    paths: *app
+  - label: Deploy to staging
+    workflow: deploy-staging.yml
+    inputs:
+      environment: staging
+  - label: Run load test
+    workflow: load-test.yml
+    paths:
+      - 'server/**'
+  - label: Check database migrations
+    workflow: database-migration-check.yml
+    paths:
+      - 'migrations/**'

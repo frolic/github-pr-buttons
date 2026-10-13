@@ -1,9 +1,14 @@
+import { html, render as renderTemplate } from 'lit-html'
 import { parse } from 'yaml'
 
 // Renders the buttons a repo lists in .github/pr-buttons.yml into the pull
 // request sidebar, and dispatches their workflows on the PR's head branch.
 // Buttons whose `paths` match none of the PR's files sit in a collapsed
 // disclosure below the others.
+//
+// Everything goes through the signed-in github.com session: the same pages,
+// JSON responses and forms the GitHub UI uses. A poll makes the same two
+// requests however many runs there are.
 //
 // GitHub navigates with Turbo and re-renders sidebar partials live, so the item
 // is re-inserted whenever it goes missing; state survives in `current`.
@@ -12,11 +17,19 @@ const CONFIG_PATH = '.github/pr-buttons.yml'
 const ITEM_ID = 'github-pr-buttons-sidebar-item'
 const RUNS_SHOWN = 5
 const RUNS_POLL_MS = 10000
+const JSON_HEADERS = {
+	Accept: 'application/json',
+	'X-Requested-With': 'XMLHttpRequest',
+	'GitHub-Verified-Fetch': 'true',
+}
+const CHANGED = 'GitHub changed this page. Update the extension.'
 
-const SPINNER = `<svg class="anim-rotate" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" style="vertical-align: text-bottom"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-opacity="0.25" stroke-width="2" vector-effect="non-scaling-stroke" fill="none"></circle><path d="M15 8a7.002 7.002 0 00-7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"></path></svg>`
+function spinner(color = '') {
+	return html`<svg class="anim-rotate ${color}" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" style="vertical-align: text-bottom"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-opacity="0.25" stroke-width="2" vector-effect="non-scaling-stroke" fill="none"></circle><path d="M15 8a7.002 7.002 0 00-7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"></path></svg>`
+}
 
 function octicon(name, color, path) {
-	return `<svg class="octicon octicon-${name} ${color}" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="vertical-align: text-bottom"><path d="${path}"></path></svg>`
+	return html`<svg class="octicon octicon-${name} ${color}" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="vertical-align: text-bottom"><path d=${path}></path></svg>`
 }
 const DOT = 'M8 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z'
 const CHECK =
@@ -30,8 +43,34 @@ const CROSS =
 
 let current = null
 
-function api(method, path, body) {
-	return chrome.runtime.sendMessage({ type: 'api', method, path, body })
+// Files at a commit never change, so a read is kept for the page's lifetime.
+// Turbo keeps the page alive across visits to other PRs.
+const files = new Map()
+
+function readFile(owner, repo, sha, path) {
+	const key = `${owner}/${repo}@${sha}:${path}`
+	if (!files.has(key)) {
+		const read = fetch(`/${owner}/${repo}/raw/${sha}/${path}`).then(async (response) => ({
+			status: response.status,
+			text: response.ok ? await response.text() : null,
+		}))
+		files.set(key, read)
+		// Other failures can be transient, so they are read again next time.
+		read.then(
+			({ status }) => status === 200 || status === 404 || files.delete(key),
+			() => files.delete(key)
+		)
+	}
+	return files.get(key)
+}
+
+// The last runs listed for each PR, shown while the list refreshes.
+const lastRuns = new Map()
+
+async function fetchPage(path) {
+	const response = await fetch(path)
+	if (!response.ok) throw new Error(`${path} returned ${response.status}.`)
+	return new DOMParser().parseFromString(await response.text(), 'text/html')
 }
 
 function prFromLocation() {
@@ -56,8 +95,10 @@ function ensure() {
 			errors: {},
 			runs: [],
 			olderRuns: [],
+			...lastRuns.get(target.key),
 			runsPending: new Set(),
 			runsError: null,
+			workflowNames: new Map(),
 			timer: 0,
 		}
 		// Turbo restores back/forward visits from a snapshot, which can carry a stale item.
@@ -78,81 +119,116 @@ function ensure() {
 
 async function load(state) {
 	const { owner, repo, number } = state
-	const pr = await api('GET', `/repos/${owner}/${repo}/pulls/${number}`)
+	const response = await fetch(`/${owner}/${repo}/pull/${number}/files`, { headers: JSON_HEADERS })
 	if (state !== current) return
-	if (pr.status === 401) return update({ phase: 'setup' })
-	if (pr.status !== 200) {
-		return update({
-			phase: 'error',
-			message: `Cannot read this pull request (${pr.status}). Check the token's repository access.`,
-		})
+	if (!response.ok) {
+		return update({ phase: 'error', message: `Cannot read this pull request (${response.status}).` })
 	}
-	state.pr = pr.data
+	const route = (await response.json())?.payload?.pullRequestsChangesRoute
+	if (state !== current) return
+	const pr = route?.pullRequest
+	if (!pr?.comparison?.headOid || !pr.headBranch || !Array.isArray(route.diffSummaries)) {
+		return update({ phase: 'error', message: CHANGED })
+	}
+	state.head = pr.comparison.headOid
+	state.branch = pr.headBranch
+	state.fork = pr.headRepositoryOwnerLogin !== owner || pr.headRepositoryName !== repo
 
-	const file = await api(
-		'GET',
-		`/repos/${owner}/${repo}/contents/${CONFIG_PATH}?ref=${pr.data.head.sha}`
-	)
+	const file = await readFile(owner, repo, state.head, CONFIG_PATH)
 	if (state !== current) return
 	if (file.status === 404) return update({ phase: 'hidden' })
-	if (file.status !== 200)
-		return update({ phase: 'error', message: `Cannot read ${CONFIG_PATH} (${file.status}).` })
+	if (!file.text) return update({ phase: 'error', message: `Cannot read ${CONFIG_PATH} (${file.status}).` })
 	try {
-		state.config = parseConfig(parse(decodeContent(file.data)))
+		state.config = parseConfig(parse(file.text))
 	} catch (error) {
 		return update({ phase: 'error', message: `Invalid ${CONFIG_PATH}: ${error.message}` })
 	}
+	if (state !== current) return
 	await checkWorkflows(state)
 	if (state !== current) return
-	if (state.config.buttons.some((button) => button.paths)) {
-		const files = await changedFiles(state)
-		if (state !== current) return
-		if (!files)
-			return update({ phase: 'error', message: 'Cannot read the files this pull request changes.' })
-		for (const button of state.config.buttons) {
-			button.matched =
-				!Array.isArray(button.paths) || files.some((file) => matchesPaths(file, button.paths))
-		}
+	// A rename lists only its new path.
+	const files = route.diffSummaries.map((summary) => summary.path)
+	for (const button of state.config.buttons) {
+		button.matched =
+			!Array.isArray(button.paths) || files.some((file) => matchesPaths(file, button.paths))
 	}
 	if (state.config.buttons.length === 0) return update({ phase: 'hidden' })
 	update({ phase: 'ready' })
 	refreshRuns(state)
 }
 
-// Dispatch runs never show in the PR's checks, so the section lists them. A
-// run started from the Actions tab on this branch is listed too: the API does
-// not say what started a dispatch.
+// Dispatch runs never show in the PR's checks, so the section lists every
+// dispatch run on the branch, whoever started it. The list rows carry no
+// commit, so the head commit's checks page says which runs are on the head.
 async function refreshRuns(state) {
 	clearTimeout(state.timer)
-	const { owner, repo, number } = state
-	// The head moves when someone pushes while the page is open.
-	const [pr, response] = await Promise.all([
-		api('GET', `/repos/${owner}/${repo}/pulls/${number}`),
-		api(
-			'GET',
-			`/repos/${owner}/${repo}/actions/runs?branch=${encodeURIComponent(state.pr.head.ref)}&event=workflow_dispatch&per_page=50`
-		),
-	])
-	if (state !== current || response.status !== 200) return
-	if (pr.status === 200) state.pr = pr.data
-	const paths = new Set(
-		state.config.buttons
-			.filter((button) => !button.problem)
-			.map((button) => `.github/workflows/${button.workflow}`)
+	const { owner, repo } = state
+	const query = encodeURIComponent(`branch:${state.branch} event:workflow_dispatch`)
+	let list, checks
+	try {
+		;[list, checks] = await Promise.all([
+			fetchPage(`/${owner}/${repo}/actions?query=${query}`),
+			fetchPage(`/${owner}/${repo}/commit/${state.head}/checks`),
+		])
+	} catch (error) {
+		if (state !== current) return
+		state.runsError = `Cannot read workflow runs: ${error.message}`
+		return render()
+	}
+	if (state !== current) return
+	const names = new Set(state.workflowNames.values())
+	const runs = [...list.querySelectorAll('.Box-row[id^="check_suite_"]')]
+		.map(parseRunRow)
+		.filter((run) => run && names.has(run.name))
+	const onHead = new Set(
+		[...checks.querySelectorAll('[id^="sidebar_check_suite_"] a[href*="/actions/runs/"]')].map(
+			(link) => runId(link.getAttribute('href'))
+		)
 	)
-	const runs = response.data.workflow_runs.filter((run) => paths.has(run.path))
-	const head = state.pr.head.sha
-	state.runs = runs.filter((run) => run.head_sha === head).slice(0, RUNS_SHOWN)
-	state.olderRuns = runs.filter((run) => run.head_sha !== head).slice(0, RUNS_SHOWN)
+	state.runsError = null
+	state.runs = runs.filter((run) => onHead.has(run.id)).slice(0, RUNS_SHOWN)
+	state.olderRuns = runs.filter((run) => !onHead.has(run.id)).slice(0, RUNS_SHOWN)
+	lastRuns.set(state.key, { runs: state.runs, olderRuns: state.olderRuns })
 	render()
 	if ([...state.runs, ...state.olderRuns].some((run) => run.status !== 'completed')) {
 		state.timer = setTimeout(() => refreshRuns(state), RUNS_POLL_MS)
 	}
 }
 
-function decodeContent(file) {
-	const bytes = Uint8Array.from(atob(file.content.replace(/\n/g, '')), (c) => c.charCodeAt(0))
-	return new TextDecoder().decode(bytes)
+function runId(href) {
+	return Number(href?.match(/\/actions\/runs\/(\d+)/)?.[1]) || null
+}
+
+// One row of the Actions tab's run list. The status icon's label reads like
+// "currently running: " or "completed successfully: ".
+function parseRunRow(row) {
+	const link = row.querySelector('a[href*="/actions/runs/"]')
+	const id = runId(link?.getAttribute('href'))
+	if (!id) return null
+	const label = (row.querySelector('svg[aria-label]')?.getAttribute('aria-label') ?? '')
+		.split(':')[0]
+		.trim()
+	return {
+		id,
+		name: link.textContent.trim(),
+		html_url: link.getAttribute('href'),
+		created_at: row.querySelector('relative-time')?.getAttribute('datetime') ?? '',
+		label,
+		...statusFromLabel(label),
+		cancelForm: row.querySelector('form[action$="/cancel"]'),
+	}
+}
+
+function statusFromLabel(label) {
+	const text = label.toLowerCase()
+	if (text.includes('running') || text.includes('in progress')) return { status: 'in_progress' }
+	if (/queued|waiting|pending|requested/.test(text)) return { status: 'queued' }
+	if (text.includes('success')) return { status: 'completed', conclusion: 'success' }
+	if (text.includes('fail')) return { status: 'completed', conclusion: 'failure' }
+	if (text.includes('timed out')) return { status: 'completed', conclusion: 'timed_out' }
+	if (text.includes('cancel')) return { status: 'completed', conclusion: 'cancelled' }
+	if (text.includes('skip')) return { status: 'completed', conclusion: 'skipped' }
+	return { status: 'completed', conclusion: null }
 }
 
 // Only a missing list fails the whole config. A bad button gets a `problem`,
@@ -184,19 +260,20 @@ function parseConfig(json) {
 
 // Reads each workflow at the PR head and checks the button can dispatch it.
 // A workflow that cannot be read for another reason is left to fail on click.
+// The run list names runs by the workflow's `name`, which defaults to its path.
 async function checkWorkflows(state) {
-	const { owner, repo, pr } = state
+	const { owner, repo, head } = state
 	const buttons = state.config.buttons.filter((button) => !button.problem)
 	const workflows = await Promise.all(
 		[...new Set(buttons.map((button) => button.workflow))].map(async (workflow) => {
-			const response = await api(
-				'GET',
-				`/repos/${owner}/${repo}/contents/.github/workflows/${encodeURIComponent(workflow)}?ref=${pr.head.sha}`
-			)
-			if (response.status === 404) return [workflow, { missing: true }]
-			if (response.status !== 200) return [workflow, null]
+			const path = `.github/workflows/${workflow}`
+			const file = await readFile(owner, repo, head, path)
+			if (file.status === 404) return [workflow, { missing: true }]
+			if (!file.text) return [workflow, null]
 			try {
-				return [workflow, { yaml: parse(decodeContent(response.data)) }]
+				const yaml = parse(file.text)
+				state.workflowNames.set(workflow, typeof yaml?.name === 'string' ? yaml.name : path)
+				return [workflow, { yaml }]
 			} catch {
 				return [workflow, { invalid: true }]
 			}
@@ -236,25 +313,6 @@ async function checkWorkflows(state) {
 	}
 }
 
-// The API lists at most 3000 files, 100 per page.
-async function changedFiles(state) {
-	const { owner, repo, number } = state
-	const files = []
-	for (let page = 1; page <= 30; page++) {
-		const response = await api(
-			'GET',
-			`/repos/${owner}/${repo}/pulls/${number}/files?per_page=100&page=${page}`
-		)
-		if (response.status !== 200) return null
-		for (const file of response.data) {
-			files.push(file.filename)
-			if (file.previous_filename) files.push(file.previous_filename)
-		}
-		if (response.data.length < 100) break
-	}
-	return files
-}
-
 // Same rules as a workflow's `on.pull_request.paths`: the last pattern that
 // matches a file decides, and a `!` pattern excludes it.
 function matchesPaths(file, patterns) {
@@ -291,67 +349,98 @@ function update(patch) {
 	else render()
 }
 
-// The spinner stays until the page navigates to the new run. A 204 is the
-// older API, which returns no run, so it goes to the workflow's runs instead.
+// Submits the Actions tab's "Run workflow" form, which answers with a
+// redirect to the new run. The spinner stays until the page navigates there.
 async function dispatch(state, button, index) {
-	const { owner, repo, pr } = state
-	const workflow = encodeURIComponent(button.workflow)
+	const { owner, repo } = state
 	delete state.errors[index]
 	state.pending.add(index)
 	render()
-	const response = await api(
-		'POST',
-		`/repos/${owner}/${repo}/actions/workflows/${workflow}/dispatches`,
-		{ ref: pr.head.ref, inputs: button.inputs ?? {} }
-	)
-	if (state !== current) return
-	if (response.status === 200 && response.data?.html_url) {
-		location.assign(response.data.html_url)
-		return
+	const fail = (message) => {
+		if (state !== current) return
+		state.pending.delete(index)
+		state.errors[index] = message
+		render()
 	}
-	if (response.status === 204) {
-		const query = encodeURIComponent(`branch:${pr.head.ref} event:workflow_dispatch`)
-		location.assign(`/${owner}/${repo}/actions/workflows/${workflow}?query=${query}`)
-		return
+	try {
+		const workflow = encodeURIComponent(`.github/workflows/${button.workflow}`)
+		const branch = encodeURIComponent(state.branch)
+		const response = await fetch(
+			`/${owner}/${repo}/actions/manual?workflow=${workflow}&branch=${branch}`,
+			{ headers: { 'X-Requested-With': 'XMLHttpRequest' } }
+		)
+		if (!response.ok) return fail(`Cannot open the run form (${response.status}).`)
+		const doc = new DOMParser().parseFromString(await response.text(), 'text/html')
+		// The page has a branch picker form with the same action.
+		const form = [...doc.querySelectorAll('form[action$="/actions/manual"]')].find(
+			(form) =>
+				form.querySelector('[name="authenticity_token"]') && form.querySelector('[name="branch"]')
+		)
+		if (!form) return fail('You cannot run workflows in this repository.')
+		const body = new FormData(form)
+		for (const [name, value] of Object.entries(button.inputs ?? {})) {
+			body.set(`inputs[${name}]`, String(value))
+		}
+		const result = await submit(form, body)
+		const run = result.redirected ? runId(new URL(result.url).pathname) : null
+		if (!run) return fail(`Dispatch failed (${result.status}).`)
+		if (state !== current) return
+		location.assign(`/${owner}/${repo}/actions/runs/${run}`)
+	} catch (error) {
+		fail(`Dispatch failed: ${error.message}`)
 	}
-	state.pending.delete(index)
-	state.errors[index] =
-		response.data?.message ?? response.error ?? `Dispatch failed (${response.status}).`
-	render()
+}
+
+// The XHR header keeps the response small: the page a form redirects to
+// answers 404 to it.
+function submit(form, body = new FormData(form)) {
+	return fetch(form.getAttribute('action'), {
+		method: 'POST',
+		body,
+		headers: { 'X-Requested-With': 'XMLHttpRequest' },
+	})
 }
 
 // Cancel a queued or running run; re-run a failed run's failed jobs, or all
-// of a cancelled run's jobs. Same endpoints as the buttons on the run's page.
+// of a cancelled run's jobs. Cancel submits the list row's form; re-run
+// submits the matching form on the run's page.
 const RUN_ACTIONS = {
-	cancel: { path: 'cancel', label: 'Cancel', icon: X },
-	'rerun-failed': { path: 'rerun-failed-jobs', label: 'Re-run failed jobs', icon: SYNC },
-	rerun: { path: 'rerun', label: 'Re-run all jobs', icon: SYNC },
+	cancel: { label: 'Cancel', icon: X },
+	'rerun-failed': { label: 'Re-run failed jobs', icon: SYNC },
+	rerun: { label: 'Re-run all jobs', icon: SYNC },
 }
 
 function runAction(run) {
-	if (run.status !== 'completed') return 'cancel'
-	if (['failure', 'timed_out', 'startup_failure'].includes(run.conclusion)) return 'rerun-failed'
+	if (run.status !== 'completed') return run.cancelForm ? 'cancel' : null
+	if (['failure', 'timed_out'].includes(run.conclusion)) return 'rerun-failed'
 	if (run.conclusion === 'cancelled') return 'rerun'
 	return null
 }
 
-async function actOnRun(state, runId, action) {
+async function actOnRun(state, id, action) {
 	const { owner, repo } = state
+	const run = [...state.runs, ...state.olderRuns].find((run) => run.id === id)
+	if (!run) return
 	state.runsError = null
-	state.runsPending.add(runId)
+	state.runsPending.add(id)
 	render()
-	const response = await api(
-		'POST',
-		`/repos/${owner}/${repo}/actions/runs/${runId}/${RUN_ACTIONS[action].path}`
-	)
-	if (state !== current) return
-	state.runsPending.delete(runId)
-	if (response.status >= 300) {
-		state.runsError =
-			response.data?.message ??
-			response.error ??
-			`${RUN_ACTIONS[action].label} failed (${response.status}).`
+	try {
+		let form = run.cancelForm
+		if (action !== 'cancel') {
+			const page = await fetchPage(`/${owner}/${repo}/actions/runs/${id}`)
+			const onlyFailed = action === 'rerun-failed'
+			form = [...page.querySelectorAll('form[action$="/rerequest_check_suite"]')].find(
+				(form) => !!form.querySelector('[name="only_failed_check_runs"]') === onlyFailed
+			)
+		}
+		if (!form) throw new Error(CHANGED)
+		const response = await submit(form)
+		if (!response.ok && !response.redirected) throw new Error(`GitHub answered ${response.status}.`)
+	} catch (error) {
+		if (state === current) state.runsError = `${RUN_ACTIONS[action].label} failed: ${error.message}`
 	}
+	if (state !== current) return
+	state.runsPending.delete(id)
 	refreshRuns(state)
 }
 
@@ -363,10 +452,6 @@ function onClick(event) {
 	}
 	const target = event.target.closest('[data-pr-button]')
 	if (!target || !current) return
-	if (target.dataset.prButton === 'setup') {
-		chrome.runtime.sendMessage({ type: 'openOptions' })
-		return
-	}
 	const index = Number(target.dataset.prButton)
 	const button = current.config.buttons[index]
 	if (button) dispatch(current, button, index)
@@ -379,107 +464,93 @@ function render() {
 		item.remove()
 		return
 	}
-	const heading = '<h3 class="discussion-sidebar-heading text-bold">Workflows</h3>'
-
-	if (current.phase === 'setup') {
-		item.innerHTML = `${heading}<button type="button" class="btn-link Link--muted f6" data-pr-button="setup">Set a GitHub token for PR buttons</button>`
-		return
-	}
-	if (current.phase === 'error') {
-		item.innerHTML = `${heading}<span class="f6 color-fg-danger">${escape(current.message)}</span>`
-		return
-	}
-
-	const fork = current.pr.head.repo?.full_name !== current.pr.base.repo.full_name
-	const row = (button, index) => {
-		const pending = current.pending.has(index)
-		const error = button.problem ?? current.errors[index]
-		const title = button.problem
-			? button.problem
-			: fork
-				? 'Workflows cannot be dispatched on a fork branch.'
-				: (button.description ?? '')
-		const disabled = pending || fork || button.problem
-		return `<div class="mb-2">
-			<button type="button" class="btn btn-sm btn-block" data-pr-button="${index}" ${disabled ? 'disabled' : ''} title="${escape(title)}">
-				${pending ? `${SPINNER} ` : ''}${escape(button.label)}
-			</button>
-			${error ? `<div class="f6 color-fg-danger mt-1">${escape(error)}</div>` : ''}
-		</div>`
-	}
-	const buttons = current.config.buttons.map((button, index) => ({ button, index }))
-	const matched = buttons.filter(({ button }) => button.matched !== false)
-	const unmatched = buttons.filter(({ button }) => button.matched === false)
-	const open = item.querySelector('.github-pr-buttons-unmatched')?.open ?? false
-	const olderOpen = item.querySelector('.github-pr-buttons-older-runs')?.open ?? false
-	item.innerHTML =
-		heading +
-		matched.map(({ button, index }) => row(button, index)).join('') +
-		(unmatched.length === 0
-			? ''
-			: `<details class="github-pr-buttons-unmatched" ${open ? 'open' : ''}>
-				<summary class="f6 Link--muted mb-2">Other workflows</summary>
-				${unmatched.map(({ button, index }) => row(button, index)).join('')}
-			</details>`) +
-		(current.runs.length + current.olderRuns.length === 0
-			? ''
-			: `<div class="mt-3">
-				${current.runs.map(runRow).join('')}
-				${
-					current.olderRuns.length === 0
-						? ''
-						: `<details class="github-pr-buttons-older-runs" ${olderOpen ? 'open' : ''}>
-							<summary class="f6 Link--muted mb-1">Other runs</summary>
-							${current.olderRuns.map(runRow).join('')}
-						</details>`
-				}
-			</div>`) +
-		(current.runsError ? `<div class="f6 color-fg-danger">${escape(current.runsError)}</div>` : '')
+	renderTemplate(section(current), item)
 }
 
-function runRow(run) {
+// The disclosures' `open` is not bound, so they keep what the reader chose.
+function section(state) {
+	const heading = html`<h3 class="discussion-sidebar-heading text-bold">Workflows</h3>`
+	if (state.phase === 'error') {
+		return html`${heading}<span class="f6 color-fg-danger">${state.message}</span>`
+	}
+	const buttons = state.config.buttons.map((button, index) => ({ button, index }))
+	const matched = buttons.filter(({ button }) => button.matched !== false)
+	const unmatched = buttons.filter(({ button }) => button.matched === false)
+	const row = ({ button, index }) => buttonRow(state, button, index)
+	return html`${heading}${matched.map(row)}
+		${
+			unmatched.length === 0
+				? ''
+				: html`<details class="github-pr-buttons-unmatched">
+						<summary class="f6 Link--muted mb-2">Other workflows</summary>
+						${unmatched.map(row)}
+					</details>`
+		}
+		${
+			state.runs.length + state.olderRuns.length === 0
+				? ''
+				: html`<div class="mt-3">
+						${state.runs.map((run) => runRow(state, run))}
+						${
+							state.olderRuns.length === 0
+								? ''
+								: html`<details class="github-pr-buttons-older-runs">
+										<summary class="f6 Link--muted mb-1">Other runs</summary>
+										${state.olderRuns.map((run) => runRow(state, run))}
+									</details>`
+						}
+					</div>`
+		}
+		${state.runsError ? html`<div class="f6 color-fg-danger">${state.runsError}</div>` : ''}`
+}
+
+function buttonRow(state, button, index) {
+	const pending = state.pending.has(index)
+	const error = button.problem ?? state.errors[index]
+	const title =
+		button.problem ??
+		(state.fork ? 'Workflows cannot be dispatched on a fork branch.' : (button.description ?? ''))
+	return html`<div class="mb-2">
+		<button type="button" class="btn btn-sm btn-block" data-pr-button=${index} ?disabled=${pending || state.fork || !!button.problem} title=${title}>
+			${pending ? html`${spinner()} ` : ''}${button.label}
+		</button>
+		${error ? html`<div class="f6 color-fg-danger mt-1">${error}</div>` : ''}
+	</div>`
+}
+
+function runRow(state, run) {
 	const [icon, label] = runStatus(run)
 	const action = runAction(run)
-	const pending = current.runsPending.has(run.id)
-	const control = !action
-		? ''
-		: `<button type="button" class="btn-octicon m-0 p-0" data-pr-run-action="${action}" data-run-id="${run.id}" ${pending ? 'disabled' : ''} title="${RUN_ACTIONS[action].label}" aria-label="${RUN_ACTIONS[action].label}">
-			${pending ? SPINNER : octicon(action, '', RUN_ACTIONS[action].icon)}
-		</button>`
-	return `<div class="github-pr-buttons-run f6 mb-1 d-flex flex-items-center">
-		<div class="flex-auto min-width-0 css-truncate css-truncate-overflow" title="${label}">
-			${icon} <a class="Link--primary" href="${escape(run.html_url)}">${escape(run.name)}</a>
-			<span class="color-fg-muted">· <relative-time datetime="${escape(run.created_at)}" format="micro"></relative-time></span>
-			${
-				run.head_sha === current.pr.head.sha
-					? ''
-					: `<span class="color-fg-muted">· <a class="Link--muted text-mono" href="/${current.owner}/${current.repo}/commit/${escape(run.head_sha)}">${escape(run.head_sha.slice(0, 7))}</a></span>`
-			}
+	const pending = state.runsPending.has(run.id)
+	return html`<div class="github-pr-buttons-run f6 mb-1 d-flex flex-items-center">
+		<div class="flex-auto min-width-0 css-truncate css-truncate-overflow" title=${label}>
+			${icon} <a class="Link--primary" href=${run.html_url}>${run.name}</a>
+			<span class="color-fg-muted">· <relative-time datetime=${run.created_at} format="micro"></relative-time></span>
 		</div>
-		${control}
+		${
+			action
+				? html`<button type="button" class="btn-octicon m-0 p-0" data-pr-run-action=${action} data-run-id=${run.id} ?disabled=${pending} title=${RUN_ACTIONS[action].label} aria-label=${RUN_ACTIONS[action].label}>
+						${pending ? spinner() : octicon(action, '', RUN_ACTIONS[action].icon)}
+					</button>`
+				: ''
+		}
 	</div>`
 }
 
 function runStatus(run) {
-	if (run.status === 'in_progress')
-		return [SPINNER.replace('anim-rotate', 'anim-rotate color-fg-attention'), 'In progress']
+	if (run.status === 'in_progress') return [spinner('color-fg-attention'), 'In progress']
 	if (run.status !== 'completed') return [octicon('dot-fill', 'color-fg-attention', DOT), 'Queued']
 	switch (run.conclusion) {
 		case 'success':
 			return [octicon('check-circle-fill', 'color-fg-success', CHECK), 'Succeeded']
 		case 'failure':
 		case 'timed_out':
-		case 'startup_failure':
 			return [octicon('x-circle-fill', 'color-fg-danger', CROSS), 'Failed']
 		case 'cancelled':
 			return [octicon('x-circle-fill', 'color-fg-muted', CROSS), 'Cancelled']
 		default:
-			return [octicon('dot-fill', 'color-fg-muted', DOT), escape(run.conclusion ?? 'Completed')]
+			return [octicon('dot-fill', 'color-fg-muted', DOT), run.label || 'Completed']
 	}
-}
-
-function escape(text) {
-	return String(text).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 }
 
 document.addEventListener('click', onClick)

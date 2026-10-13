@@ -1,0 +1,22 @@
+name: Load test
+
+# Demo workflow for the extension's test PR. One job fails on purpose, so
+# the PR shows a failed run that can be re-run.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - run: sleep 15
+  sustained:
+    name: Sustained load
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          sleep 20
+          echo "::error::p95 latency was 412 ms, over the 300 ms budget."
+          exit 1

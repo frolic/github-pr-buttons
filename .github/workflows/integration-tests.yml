@@ -1,0 +1,21 @@
+name: Integration tests
+
+# Demo workflow for the extension's test PR. Its jobs only sleep.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Integration tests (shard ${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - name: Install dependencies
+        run: sleep 10
+      - name: Start services
+        run: sleep 15
+      - name: Run tests
+        run: sleep $((120 + ${{ matrix.shard }} * 30))

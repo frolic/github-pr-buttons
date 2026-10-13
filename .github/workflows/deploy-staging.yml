@@ -1,0 +1,22 @@
+name: Deploy to staging
+
+# Demo workflow for the extension's test PR. Its jobs only sleep.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy to
+        type: choice
+        options: [staging, qa]
+        default: staging
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build
+        run: sleep 20
+      - name: Deploy
+        run: sleep 10
