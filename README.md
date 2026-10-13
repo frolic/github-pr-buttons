@@ -70,6 +70,6 @@ npm install
 npm run build
 ```
 
-To release, bump the version in `src/manifest.json` and add its section to [`CHANGELOG.md`](CHANGELOG.md). The push to `main` publishes the release with that section as its notes.
+To release, bump the version in `src/manifest.json` and add its section to [`CHANGELOG.md`](CHANGELOG.md). Then run the **Build** workflow by hand on `main`: it publishes the release with that section as its notes. Pushes to `main` only build.
 
 `npm run build` writes the unpacked extension to `dist/extension` and the zip to `dist/github-pr-buttons.zip`. Load `dist/extension` with **Load unpacked**, and click reload on the extension's card after each build. PRs get a preview build, linked from a comment on the PR.
