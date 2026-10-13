@@ -1,12 +1,14 @@
 # GitHub PR Buttons
 
-A Chrome extension that adds a **Workflows** section to the pull request sidebar on github.com. A repo lists buttons in `.github/pr-buttons.yml`. Each button dispatches a workflow on the PR's head branch and then opens the new run.
+<img align="right" src="docs/sidebar.png" width="365" alt="The Workflows section in a pull request sidebar: three buttons, a collapsed Other workflows section, and a list of runs with their status">
 
-<img src="docs/sidebar.png" width="365" alt="The Workflows section in a pull request sidebar: three buttons, a collapsed Other workflows section, and a list of runs with their status">
+A Chrome extension that adds a **Workflows** section to the pull request sidebar on github.com. A repo lists buttons in `.github/pr-buttons.yml`. Each button dispatches a workflow on the PR's head branch and then opens the new run.
 
 Use it for workflows you run on demand, instead of label triggers: screenshots, a slow test suite, a preview deploy.
 
 Below the buttons is a list of the latest dispatched runs of those workflows on the PR's head commit, whoever started them. `workflow_dispatch` runs do not show in the PR's checks, so this is where you see them. Runs on older commits are in a collapsed "Other runs" section. On hover, each run shows an icon button: cancel while it is queued or running, re-run failed jobs when it failed, and re-run all jobs when it was cancelled.
+
+<br clear="right">
 
 ## Install
 
