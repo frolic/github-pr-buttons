@@ -1,3 +1,4 @@
+import { html, render as renderTemplate } from 'lit-html'
 import { parse } from 'yaml'
 
 // Renders the buttons a repo lists in .github/pr-buttons.yml into the pull
@@ -23,10 +24,12 @@ const JSON_HEADERS = {
 }
 const CHANGED = 'GitHub changed this page. Update the extension.'
 
-const SPINNER = `<svg class="anim-rotate" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" style="vertical-align: text-bottom"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-opacity="0.25" stroke-width="2" vector-effect="non-scaling-stroke" fill="none"></circle><path d="M15 8a7.002 7.002 0 00-7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"></path></svg>`
+function spinner(color = '') {
+	return html`<svg class="anim-rotate ${color}" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" style="vertical-align: text-bottom"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-opacity="0.25" stroke-width="2" vector-effect="non-scaling-stroke" fill="none"></circle><path d="M15 8a7.002 7.002 0 00-7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"></path></svg>`
+}
 
 function octicon(name, color, path) {
-	return `<svg class="octicon octicon-${name} ${color}" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="vertical-align: text-bottom"><path d="${path}"></path></svg>`
+	return html`<svg class="octicon octicon-${name} ${color}" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="vertical-align: text-bottom"><path d=${path}></path></svg>`
 }
 const DOT = 'M8 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z'
 const CHECK =
@@ -39,6 +42,30 @@ const CROSS =
 	'M2.343 13.657A8 8 0 1 1 13.658 2.343 8 8 0 0 1 2.343 13.657ZM6.03 4.97a.751.751 0 0 0-1.042.018.751.751 0 0 0-.018 1.042L6.94 8 4.97 9.97a.749.749 0 0 0 .326 1.275.749.749 0 0 0 .734-.215L8 9.06l1.97 1.97a.749.749 0 0 0 1.275-.326.749.749 0 0 0-.215-.734L9.06 8l1.97-1.97a.749.749 0 0 0-.326-1.275.749.749 0 0 0-.734.215L8 6.94Z'
 
 let current = null
+
+// Files at a commit never change, so a read is kept for the page's lifetime.
+// Turbo keeps the page alive across visits to other PRs.
+const files = new Map()
+
+function readFile(owner, repo, sha, path) {
+	const key = `${owner}/${repo}@${sha}:${path}`
+	if (!files.has(key)) {
+		const read = fetch(`/${owner}/${repo}/raw/${sha}/${path}`).then(async (response) => ({
+			status: response.status,
+			text: response.ok ? await response.text() : null,
+		}))
+		files.set(key, read)
+		// Other failures can be transient, so they are read again next time.
+		read.then(
+			({ status }) => status === 200 || status === 404 || files.delete(key),
+			() => files.delete(key)
+		)
+	}
+	return files.get(key)
+}
+
+// The last runs listed for each PR, shown while the list refreshes.
+const lastRuns = new Map()
 
 async function fetchPage(path) {
 	const response = await fetch(path)
@@ -68,6 +95,7 @@ function ensure() {
 			errors: {},
 			runs: [],
 			olderRuns: [],
+			...lastRuns.get(target.key),
 			runsPending: new Set(),
 			runsError: null,
 			workflowNames: new Map(),
@@ -106,12 +134,12 @@ async function load(state) {
 	state.branch = pr.headBranch
 	state.fork = pr.headRepositoryOwnerLogin !== owner || pr.headRepositoryName !== repo
 
-	const file = await fetch(`/${owner}/${repo}/raw/${state.head}/${CONFIG_PATH}`)
+	const file = await readFile(owner, repo, state.head, CONFIG_PATH)
 	if (state !== current) return
 	if (file.status === 404) return update({ phase: 'hidden' })
-	if (!file.ok) return update({ phase: 'error', message: `Cannot read ${CONFIG_PATH} (${file.status}).` })
+	if (!file.text) return update({ phase: 'error', message: `Cannot read ${CONFIG_PATH} (${file.status}).` })
 	try {
-		state.config = parseConfig(parse(await file.text()))
+		state.config = parseConfig(parse(file.text))
 	} catch (error) {
 		return update({ phase: 'error', message: `Invalid ${CONFIG_PATH}: ${error.message}` })
 	}
@@ -160,6 +188,7 @@ async function refreshRuns(state) {
 	state.runsError = null
 	state.runs = runs.filter((run) => onHead.has(run.id)).slice(0, RUNS_SHOWN)
 	state.olderRuns = runs.filter((run) => !onHead.has(run.id)).slice(0, RUNS_SHOWN)
+	lastRuns.set(state.key, { runs: state.runs, olderRuns: state.olderRuns })
 	render()
 	if ([...state.runs, ...state.olderRuns].some((run) => run.status !== 'completed')) {
 		state.timer = setTimeout(() => refreshRuns(state), RUNS_POLL_MS)
@@ -238,11 +267,11 @@ async function checkWorkflows(state) {
 	const workflows = await Promise.all(
 		[...new Set(buttons.map((button) => button.workflow))].map(async (workflow) => {
 			const path = `.github/workflows/${workflow}`
-			const response = await fetch(`/${owner}/${repo}/raw/${head}/${path}`)
-			if (response.status === 404) return [workflow, { missing: true }]
-			if (!response.ok) return [workflow, null]
+			const file = await readFile(owner, repo, head, path)
+			if (file.status === 404) return [workflow, { missing: true }]
+			if (!file.text) return [workflow, null]
 			try {
-				const yaml = parse(await response.text())
+				const yaml = parse(file.text)
 				state.workflowNames.set(workflow, typeof yaml?.name === 'string' ? yaml.name : path)
 				return [workflow, { yaml }]
 			} catch {
@@ -435,81 +464,81 @@ function render() {
 		item.remove()
 		return
 	}
-	const heading = '<h3 class="discussion-sidebar-heading text-bold">Workflows</h3>'
-
-	if (current.phase === 'error') {
-		item.innerHTML = `${heading}<span class="f6 color-fg-danger">${escape(current.message)}</span>`
-		return
-	}
-
-	const { fork } = current
-	const row = (button, index) => {
-		const pending = current.pending.has(index)
-		const error = button.problem ?? current.errors[index]
-		const title = button.problem
-			? button.problem
-			: fork
-				? 'Workflows cannot be dispatched on a fork branch.'
-				: (button.description ?? '')
-		const disabled = pending || fork || button.problem
-		return `<div class="mb-2">
-			<button type="button" class="btn btn-sm btn-block" data-pr-button="${index}" ${disabled ? 'disabled' : ''} title="${escape(title)}">
-				${pending ? `${SPINNER} ` : ''}${escape(button.label)}
-			</button>
-			${error ? `<div class="f6 color-fg-danger mt-1">${escape(error)}</div>` : ''}
-		</div>`
-	}
-	const buttons = current.config.buttons.map((button, index) => ({ button, index }))
-	const matched = buttons.filter(({ button }) => button.matched !== false)
-	const unmatched = buttons.filter(({ button }) => button.matched === false)
-	const open = item.querySelector('.github-pr-buttons-unmatched')?.open ?? false
-	const olderOpen = item.querySelector('.github-pr-buttons-older-runs')?.open ?? false
-	item.innerHTML =
-		heading +
-		matched.map(({ button, index }) => row(button, index)).join('') +
-		(unmatched.length === 0
-			? ''
-			: `<details class="github-pr-buttons-unmatched" ${open ? 'open' : ''}>
-				<summary class="f6 Link--muted mb-2">Other workflows</summary>
-				${unmatched.map(({ button, index }) => row(button, index)).join('')}
-			</details>`) +
-		(current.runs.length + current.olderRuns.length === 0
-			? ''
-			: `<div class="mt-3">
-				${current.runs.map(runRow).join('')}
-				${
-					current.olderRuns.length === 0
-						? ''
-						: `<details class="github-pr-buttons-older-runs" ${olderOpen ? 'open' : ''}>
-							<summary class="f6 Link--muted mb-1">Other runs</summary>
-							${current.olderRuns.map(runRow).join('')}
-						</details>`
-				}
-			</div>`) +
-		(current.runsError ? `<div class="f6 color-fg-danger">${escape(current.runsError)}</div>` : '')
+	renderTemplate(section(current), item)
 }
 
-function runRow(run) {
+// The disclosures' `open` is not bound, so they keep what the reader chose.
+function section(state) {
+	const heading = html`<h3 class="discussion-sidebar-heading text-bold">Workflows</h3>`
+	if (state.phase === 'error') {
+		return html`${heading}<span class="f6 color-fg-danger">${state.message}</span>`
+	}
+	const buttons = state.config.buttons.map((button, index) => ({ button, index }))
+	const matched = buttons.filter(({ button }) => button.matched !== false)
+	const unmatched = buttons.filter(({ button }) => button.matched === false)
+	const row = ({ button, index }) => buttonRow(state, button, index)
+	return html`${heading}${matched.map(row)}
+		${
+			unmatched.length === 0
+				? ''
+				: html`<details class="github-pr-buttons-unmatched">
+						<summary class="f6 Link--muted mb-2">Other workflows</summary>
+						${unmatched.map(row)}
+					</details>`
+		}
+		${
+			state.runs.length + state.olderRuns.length === 0
+				? ''
+				: html`<div class="mt-3">
+						${state.runs.map((run) => runRow(state, run))}
+						${
+							state.olderRuns.length === 0
+								? ''
+								: html`<details class="github-pr-buttons-older-runs">
+										<summary class="f6 Link--muted mb-1">Other runs</summary>
+										${state.olderRuns.map((run) => runRow(state, run))}
+									</details>`
+						}
+					</div>`
+		}
+		${state.runsError ? html`<div class="f6 color-fg-danger">${state.runsError}</div>` : ''}`
+}
+
+function buttonRow(state, button, index) {
+	const pending = state.pending.has(index)
+	const error = button.problem ?? state.errors[index]
+	const title =
+		button.problem ??
+		(state.fork ? 'Workflows cannot be dispatched on a fork branch.' : (button.description ?? ''))
+	return html`<div class="mb-2">
+		<button type="button" class="btn btn-sm btn-block" data-pr-button=${index} ?disabled=${pending || state.fork || !!button.problem} title=${title}>
+			${pending ? html`${spinner()} ` : ''}${button.label}
+		</button>
+		${error ? html`<div class="f6 color-fg-danger mt-1">${error}</div>` : ''}
+	</div>`
+}
+
+function runRow(state, run) {
 	const [icon, label] = runStatus(run)
 	const action = runAction(run)
-	const pending = current.runsPending.has(run.id)
-	const control = !action
-		? ''
-		: `<button type="button" class="btn-octicon m-0 p-0" data-pr-run-action="${action}" data-run-id="${run.id}" ${pending ? 'disabled' : ''} title="${RUN_ACTIONS[action].label}" aria-label="${RUN_ACTIONS[action].label}">
-			${pending ? SPINNER : octicon(action, '', RUN_ACTIONS[action].icon)}
-		</button>`
-	return `<div class="github-pr-buttons-run f6 mb-1 d-flex flex-items-center">
-		<div class="flex-auto min-width-0 css-truncate css-truncate-overflow" title="${label}">
-			${icon} <a class="Link--primary" href="${escape(run.html_url)}">${escape(run.name)}</a>
-			<span class="color-fg-muted">· <relative-time datetime="${escape(run.created_at)}" format="micro"></relative-time></span>
+	const pending = state.runsPending.has(run.id)
+	return html`<div class="github-pr-buttons-run f6 mb-1 d-flex flex-items-center">
+		<div class="flex-auto min-width-0 css-truncate css-truncate-overflow" title=${label}>
+			${icon} <a class="Link--primary" href=${run.html_url}>${run.name}</a>
+			<span class="color-fg-muted">· <relative-time datetime=${run.created_at} format="micro"></relative-time></span>
 		</div>
-		${control}
+		${
+			action
+				? html`<button type="button" class="btn-octicon m-0 p-0" data-pr-run-action=${action} data-run-id=${run.id} ?disabled=${pending} title=${RUN_ACTIONS[action].label} aria-label=${RUN_ACTIONS[action].label}>
+						${pending ? spinner() : octicon(action, '', RUN_ACTIONS[action].icon)}
+					</button>`
+				: ''
+		}
 	</div>`
 }
 
 function runStatus(run) {
-	if (run.status === 'in_progress')
-		return [SPINNER.replace('anim-rotate', 'anim-rotate color-fg-attention'), 'In progress']
+	if (run.status === 'in_progress') return [spinner('color-fg-attention'), 'In progress']
 	if (run.status !== 'completed') return [octicon('dot-fill', 'color-fg-attention', DOT), 'Queued']
 	switch (run.conclusion) {
 		case 'success':
@@ -520,12 +549,8 @@ function runStatus(run) {
 		case 'cancelled':
 			return [octicon('x-circle-fill', 'color-fg-muted', CROSS), 'Cancelled']
 		default:
-			return [octicon('dot-fill', 'color-fg-muted', DOT), escape(run.label || 'Completed')]
+			return [octicon('dot-fill', 'color-fg-muted', DOT), run.label || 'Completed']
 	}
-}
-
-function escape(text) {
-	return String(text).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 }
 
 document.addEventListener('click', onClick)

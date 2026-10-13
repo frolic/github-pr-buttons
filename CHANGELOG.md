@@ -4,6 +4,8 @@
 
 - No token. The extension now uses your github.com session, the same pages and forms as the Actions tab, so there is nothing to set up. The options page is gone.
 - Runs on older commits no longer show their commit.
+- The config and workflow files are read once per commit, and the runs list shows its last runs at once while it refreshes.
+- The section updates only what changed, so an open disclosure or a hovered run stays as it is during a refresh.
 
 ## v0.1.0
 
