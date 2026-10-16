@@ -3,8 +3,9 @@ name: Build
 # - On main: builds only.
 # - Run by hand: publishes the extension zip as the release for the manifest
 #   version (v<version>), with that version's CHANGELOG.md section as its
-#   notes. For a new release, bump the version in src/manifest.json and add a
-#   section; a run without a bump rebuilds that release's zip and notes.
+#   notes, and submits the zip to the Chrome Web Store for review. For a new
+#   release, bump the version in src/manifest.json and add a section; a run
+#   without a bump rebuilds that release's zip and notes, and skips the store.
 # - On a PR: uploads the unpacked extension as a workflow artifact and links it
 #   from a sticky PR comment, as a preview build.
 
@@ -27,6 +28,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      id-token: write
     steps:
       - uses: actions/checkout@v7
 
@@ -78,3 +80,43 @@ jobs:
           else
             gh release create "$TAG" dist/github-pr-buttons.zip --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
           fi
+
+      - name: Authenticate to Google Cloud
+        id: google
+        if: github.event_name == 'workflow_dispatch'
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+
+      - name: Submit to the Chrome Web Store
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TOKEN: ${{ steps.google.outputs.access_token }}
+          ITEM: https://chromewebstore.googleapis.com/v2/publishers/${{ vars.CWS_PUBLISHER_ID }}/items/celiahddgfpgpabdamncedfleagdbifj
+          UPLOAD: https://chromewebstore.googleapis.com/upload/v2/publishers/${{ vars.CWS_PUBLISHER_ID }}/items/celiahddgfpgpabdamncedfleagdbifj
+        run: |
+          api() { curl -sS --fail-with-body -H "Authorization: Bearer $TOKEN" "$@"; }
+          # The store only accepts a version higher than its last upload, so a
+          # rebuild of a version the store already has stops here.
+          VERSION=$(jq -r .version src/manifest.json)
+          if api "$ITEM:fetchStatus" | jq -e --arg v "$VERSION" '[.publishedItemRevisionStatus, .submittedItemRevisionStatus][]?.distributionChannels[]?.crxVersion | select(. == $v)' >/dev/null; then
+            echo "The Chrome Web Store already has $VERSION"
+            exit 0
+          fi
+          STATE=$(api -X POST -H 'Content-Type: application/zip' --data-binary @dist/github-pr-buttons.zip "$UPLOAD:upload" | tee /dev/stderr | jq -r .uploadState)
+          for _ in $(seq 30); do
+            case "$STATE" in
+              SUCCEEDED) break ;;
+              FAILED) echo "::error::The Chrome Web Store rejected the upload"; exit 1 ;;
+            esac
+            sleep 10
+            STATE=$(api "$ITEM:fetchStatus" | tee /dev/stderr | jq -r .lastAsyncUploadState)
+          done
+          if [ "$STATE" != SUCCEEDED ]; then
+            echo "::error::The Chrome Web Store upload did not finish"
+            exit 1
+          fi
+          api -X POST -H 'Content-Type: application/json' -d '{}' "$ITEM:publish" | tee /dev/stderr
