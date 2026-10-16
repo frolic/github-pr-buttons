@@ -6,6 +6,6 @@ GitHub PR Buttons adds a **Workflows** section to the pull request sidebar on gi
 
 Below the buttons is a list of the runs those workflows made on the PR's branch, with cancel and re-run on hover. There is no token to set up: the extension uses your github.com session.
 
-**Install:** download `github-pr-buttons.zip` below and unzip it. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and select the unzipped folder.
+**Install:** [GitHub PR Buttons on the Chrome Web Store](https://chromewebstore.google.com/detail/github-pr-buttons/celiahddgfpgpabdamncedfleagdbifj).
 
 **Set up a repo:** see the [README](https://github.com/frolic/github-pr-buttons#configure-a-repo).
