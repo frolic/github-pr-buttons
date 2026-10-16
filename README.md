@@ -12,12 +12,9 @@ Below the buttons is a list of the latest dispatched runs of those workflows on 
 
 ## Install
 
-1. Download [`github-pr-buttons.zip`](https://github.com/frolic/github-pr-buttons/releases/latest/download/github-pr-buttons.zip) from the [latest release](https://github.com/frolic/github-pr-buttons/releases/latest) and unzip it.
-2. Open `chrome://extensions`, turn on **Developer mode**, and click **Load unpacked**. Select the unzipped folder.
+Install [GitHub PR Buttons from the Chrome Web Store](https://chromewebstore.google.com/detail/github-pr-buttons/celiahddgfpgpabdamncedfleagdbifj).
 
 There is no token to set. The extension uses your github.com session: it reads the same pages and submits the same forms as the Actions tab, so it can do what you can do there, and runs are attributed to you. It sends nothing anywhere but github.com.
-
-To update, download the zip again, replace the folder's contents, and click the reload button on the extension's card.
 
 ## Configure a repo
 
@@ -69,11 +66,4 @@ Buttons are disabled on PRs from forks, because a workflow cannot be dispatched 
 
 ## Develop
 
-```sh
-npm install
-npm run build
-```
-
-To release, bump the version in `src/manifest.json` and add its section to [`CHANGELOG.md`](CHANGELOG.md). Then run the **Build** workflow by hand on `main`: it publishes the release with that section as its notes. Pushes to `main` only build.
-
-`npm run build` writes the unpacked extension to `dist/extension` and the zip to `dist/github-pr-buttons.zip`. Load `dist/extension` with **Load unpacked**, and click reload on the extension's card after each build. PRs get a preview build, linked from a comment on the PR.
+See [DEVELOPMENT.md](DEVELOPMENT.md) to build the extension, load it from source, and release it.
