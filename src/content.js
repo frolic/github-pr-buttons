@@ -12,6 +12,10 @@ import { parse } from 'yaml'
 //
 // GitHub navigates with Turbo and re-renders sidebar partials live, so the item
 // is re-inserted whenever it goes missing; state survives in `current`.
+//
+// The PR page comes in two versions: the classic one, with
+// #partial-discussion-sidebar, and the new React one, with a sticky sidebar of
+// sections. The section mounts in whichever the page has.
 
 const CONFIG_PATH = '.github/pr-buttons.yml'
 const ITEM_ID = 'github-pr-buttons-sidebar-item'
@@ -197,23 +201,65 @@ function ensure() {
 		})
 		load(state)
 	}
-	const sidebar = document.getElementById('partial-discussion-sidebar')
-	if (!sidebar || current.phase === 'loading' || current.phase === 'hidden') return
-	// The section sits right above "Notifications". While the page still
-	// parses, that item can be missing only because it has not arrived yet.
-	const notifications = sidebar.querySelector(':scope > .sidebar-notifications')
-	if (!notifications && document.readyState === 'loading') return
+	const mount = findMount()
+	if (!mount || current.phase === 'loading' || current.phase === 'hidden') return
+	const { sidebar, before } = mount
 	const existing = document.getElementById(ITEM_ID)
-	if (existing) {
-		if (notifications && existing.nextElementSibling !== notifications) notifications.before(existing)
+	if (existing?.parentElement === sidebar) {
+		if (before && existing.nextElementSibling !== before) before.before(existing)
 		return
 	}
-	const item = document.createElement('div')
+	// Left in the other version's sidebar by a navigation.
+	existing?.remove()
+	const item = document.createElement(mount.view === 'react' ? 'section' : 'div')
 	item.id = ITEM_ID
-	item.className = 'discussion-sidebar-item'
-	if (notifications) notifications.before(item)
+	if (mount.view === 'react') {
+		// The attribute gives the section the divider the other sections have.
+		item.dataset.overviewSidebarItem = 'true'
+		item.setAttribute('aria-label', 'Workflows')
+		item.dataset.view = 'react'
+		Object.assign(item.dataset, reactClasses(sidebar))
+	} else {
+		item.className = 'discussion-sidebar-item'
+	}
+	if (before) before.before(item)
 	else sidebar.append(item)
 	render()
+}
+
+// Where the section goes, or null while the page has no sidebar yet.
+function findMount() {
+	const classic = document.getElementById('partial-discussion-sidebar')
+	if (classic) {
+		// The section sits right above "Notifications". While the page still
+		// parses, that item can be missing only because it has not arrived yet.
+		const before = classic.querySelector(':scope > .sidebar-notifications')
+		if (!before && document.readyState === 'loading') return null
+		return { view: 'classic', sidebar: classic, before }
+	}
+	const sidebar = document.querySelector('[data-testid="sticky-sidebar"]')
+	if (!sidebar) return null
+	// The section sits right above the participants, or above the PR actions
+	// list that follows the sections.
+	const children = [...sidebar.children].filter((child) => child.id !== ITEM_ID)
+	const before =
+		children.find((child) => /participants?$/.test(child.getAttribute('aria-label') ?? '')) ??
+		children.find((child) => child.tagName !== 'SECTION') ??
+		null
+	return { view: 'react', sidebar, before }
+}
+
+// The new sidebar styles its sections with generated class names, so the
+// section copies them from a section that has a plain heading.
+function reactClasses(sidebar) {
+	const title = sidebar.querySelector(':scope > section h4[class*="sectionTitle"]')
+	const header = title?.parentElement?.tagName === 'DIV' ? title.parentElement : null
+	const body = sidebar.querySelector(':scope > section > [class*="body__"]')
+	return {
+		headerClass: header?.className ?? 'd-flex',
+		titleClass: title?.className ?? 'f6 text-bold m-0',
+		bodyClass: body?.className ?? 'mt-1',
+	}
 }
 
 async function load(state) {
@@ -602,20 +648,30 @@ function render() {
 		item.remove()
 		return
 	}
-	renderTemplate(section(current), item)
+	const template =
+		item.dataset.view === 'react' ? reactSection(current, item.dataset) : section(current)
+	renderTemplate(template, item)
 }
 
 // The disclosures' `open` is not bound, so they keep what the reader chose.
 function section(state) {
-	const heading = html`<h3 class="discussion-sidebar-heading text-bold">Workflows</h3>`
+	return html`<h3 class="discussion-sidebar-heading text-bold">Workflows</h3>${sectionBody(state)}`
+}
+
+function reactSection(state, { headerClass, titleClass, bodyClass }) {
+	return html`<div class=${headerClass}><h4 class=${titleClass}>Workflows</h4></div>
+		<div class=${bodyClass}>${sectionBody(state)}</div>`
+}
+
+function sectionBody(state) {
 	if (state.phase === 'error') {
-		return html`${heading}<span class="f6 color-fg-danger">${state.message}</span>`
+		return html`<span class="f6 color-fg-danger">${state.message}</span>`
 	}
 	const buttons = state.config.buttons.map((button, index) => ({ button, index }))
 	const matched = buttons.filter(({ button }) => button.matched !== false)
 	const unmatched = buttons.filter(({ button }) => button.matched === false)
 	const row = ({ button, index }) => buttonRow(state, button, index)
-	return html`${heading}${matched.map(row)}
+	return html`${matched.map(row)}
 		${
 			unmatched.length === 0
 				? ''
