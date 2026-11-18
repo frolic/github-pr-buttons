@@ -2,7 +2,7 @@
 
 ## v0.1.1
 
-The **Workflows** section shows in GitHub's new pull request page too, above the participants. The classic page works as before.
+The **Workflows** section shows in GitHub's new pull request page too, after the last sidebar section. It finds the sidebar by a data attribute and brings its own styles, so it doesn't depend on GitHub's generated class names or English labels. The classic page works as before.
 
 ## v0.1.0
 

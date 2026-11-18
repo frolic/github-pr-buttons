@@ -206,7 +206,7 @@ function ensure() {
 	const { sidebar, before } = mount
 	const existing = document.getElementById(ITEM_ID)
 	if (existing?.parentElement === sidebar) {
-		if (before && existing.nextElementSibling !== before) before.before(existing)
+		if (existing.nextElementSibling !== before) sidebar.insertBefore(existing, before)
 		return
 	}
 	// Left in the other version's sidebar by a navigation.
@@ -218,16 +218,16 @@ function ensure() {
 		item.dataset.overviewSidebarItem = 'true'
 		item.setAttribute('aria-label', 'Workflows')
 		item.dataset.view = 'react'
-		Object.assign(item.dataset, reactClasses(sidebar))
 	} else {
 		item.className = 'discussion-sidebar-item'
 	}
-	if (before) before.before(item)
-	else sidebar.append(item)
+	sidebar.insertBefore(item, before)
 	render()
 }
 
-// Where the section goes, or null while the page has no sidebar yet.
+// Where the section goes, or null while the page has no sidebar yet. Both
+// versions are found by ids and data attributes that GitHub's own scripts and
+// styles rely on, not by generated class names or English text.
 function findMount() {
 	const classic = document.getElementById('partial-discussion-sidebar')
 	if (classic) {
@@ -237,29 +237,17 @@ function findMount() {
 		if (!before && document.readyState === 'loading') return null
 		return { view: 'classic', sidebar: classic, before }
 	}
-	const sidebar = document.querySelector('[data-testid="sticky-sidebar"]')
-	if (!sidebar) return null
-	// The section sits right above the participants, or above the PR actions
-	// list that follows the sections.
-	const children = [...sidebar.children].filter((child) => child.id !== ITEM_ID)
-	const before =
-		children.find((child) => /participants?$/.test(child.getAttribute('aria-label') ?? '')) ??
-		children.find((child) => child.tagName !== 'SECTION') ??
-		null
-	return { view: 'react', sidebar, before }
-}
-
-// The new sidebar styles its sections with generated class names, so the
-// section copies them from a section that has a plain heading.
-function reactClasses(sidebar) {
-	const title = sidebar.querySelector(':scope > section h4[class*="sectionTitle"]')
-	const header = title?.parentElement?.tagName === 'DIV' ? title.parentElement : null
-	const body = sidebar.querySelector(':scope > section > [class*="body__"]')
-	return {
-		headerClass: header?.className ?? 'd-flex',
-		titleClass: title?.className ?? 'f6 text-bold m-0',
-		bodyClass: body?.className ?? 'mt-1',
-	}
+	// Each section of the new sidebar has this attribute, which also gives it
+	// the divider above it.
+	const sections = [
+		...document.querySelectorAll(`section[data-overview-sidebar-item]:not(#${ITEM_ID})`),
+	]
+	const last = sections.at(-1)
+	if (!last) return null
+	// The section goes after the last section, above the PR actions.
+	let before = last.nextElementSibling
+	if (before?.id === ITEM_ID) before = before.nextElementSibling
+	return { view: 'react', sidebar: last.parentElement, before }
 }
 
 async function load(state) {
@@ -648,9 +636,7 @@ function render() {
 		item.remove()
 		return
 	}
-	const template =
-		item.dataset.view === 'react' ? reactSection(current, item.dataset) : section(current)
-	renderTemplate(template, item)
+	renderTemplate(item.dataset.view === 'react' ? reactSection(current) : section(current), item)
 }
 
 // The disclosures' `open` is not bound, so they keep what the reader chose.
@@ -658,9 +644,11 @@ function section(state) {
 	return html`<h3 class="discussion-sidebar-heading text-bold">Workflows</h3>${sectionBody(state)}`
 }
 
-function reactSection(state, { headerClass, titleClass, bodyClass }) {
-	return html`<div class=${headerClass}><h4 class=${titleClass}>Workflows</h4></div>
-		<div class=${bodyClass}>${sectionBody(state)}</div>`
+// The new sidebar styles its sections with generated class names, so this one
+// has its own styles in content.css.
+function reactSection(state) {
+	return html`<h4 class="github-pr-buttons-title">Workflows</h4>
+		<div class="github-pr-buttons-body">${sectionBody(state)}</div>`
 }
 
 function sectionBody(state) {

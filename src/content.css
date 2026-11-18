@@ -7,3 +7,14 @@
 .github-pr-buttons-run:focus-within [data-pr-run-action] {
 	visibility: visible;
 }
+
+/* The section heading in the new PR page, like the other sections'. */
+.github-pr-buttons-title {
+	margin: 0;
+	font-size: var(--text-body-size-small, 12px);
+	font-weight: var(--base-text-weight-semibold, 600);
+	color: var(--fgColor-muted, #59636e);
+}
+.github-pr-buttons-body {
+	margin-top: var(--base-size-4, 4px);
+}
