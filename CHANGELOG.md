@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.1
+
+The **Workflows** section shows in GitHub's new pull request page too, after the last sidebar section. It finds the sidebar by a data attribute and brings its own styles, so it doesn't depend on GitHub's generated class names or English labels. The classic page works as before.
+
 ## v0.1.0
 
 GitHub PR Buttons adds a **Workflows** section to the pull request sidebar on github.com. A repo lists buttons in `.github/pr-buttons.yml`, and each button runs a workflow on the PR's branch, then opens the new run. Use it for workflows you run on demand: slow test suites, snapshot updates, staging deploys.
