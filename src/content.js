@@ -12,6 +12,10 @@ import { parse } from 'yaml'
 //
 // GitHub navigates with Turbo and re-renders sidebar partials live, so the item
 // is re-inserted whenever it goes missing; state survives in `current`.
+//
+// The PR page comes in two versions: the classic one, with
+// #partial-discussion-sidebar, and the new React one, with a sticky sidebar of
+// sections. The section mounts in whichever the page has.
 
 const CONFIG_PATH = '.github/pr-buttons.yml'
 const ITEM_ID = 'github-pr-buttons-sidebar-item'
@@ -197,23 +201,53 @@ function ensure() {
 		})
 		load(state)
 	}
-	const sidebar = document.getElementById('partial-discussion-sidebar')
-	if (!sidebar || current.phase === 'loading' || current.phase === 'hidden') return
-	// The section sits right above "Notifications". While the page still
-	// parses, that item can be missing only because it has not arrived yet.
-	const notifications = sidebar.querySelector(':scope > .sidebar-notifications')
-	if (!notifications && document.readyState === 'loading') return
+	const mount = findMount()
+	if (!mount || current.phase === 'loading' || current.phase === 'hidden') return
+	const { sidebar, before } = mount
 	const existing = document.getElementById(ITEM_ID)
-	if (existing) {
-		if (notifications && existing.nextElementSibling !== notifications) notifications.before(existing)
+	if (existing?.parentElement === sidebar) {
+		if (existing.nextElementSibling !== before) sidebar.insertBefore(existing, before)
 		return
 	}
-	const item = document.createElement('div')
+	// Left in the other version's sidebar by a navigation.
+	existing?.remove()
+	const item = document.createElement(mount.view === 'react' ? 'section' : 'div')
 	item.id = ITEM_ID
-	item.className = 'discussion-sidebar-item'
-	if (notifications) notifications.before(item)
-	else sidebar.append(item)
+	if (mount.view === 'react') {
+		// The attribute gives the section the divider the other sections have.
+		item.dataset.overviewSidebarItem = 'true'
+		item.setAttribute('aria-label', 'Workflows')
+		item.dataset.view = 'react'
+	} else {
+		item.className = 'discussion-sidebar-item'
+	}
+	sidebar.insertBefore(item, before)
 	render()
+}
+
+// Where the section goes, or null while the page has no sidebar yet. Both
+// versions are found by ids and data attributes that GitHub's own scripts and
+// styles rely on, not by generated class names or English text.
+function findMount() {
+	const classic = document.getElementById('partial-discussion-sidebar')
+	if (classic) {
+		// The section sits right above "Notifications". While the page still
+		// parses, that item can be missing only because it has not arrived yet.
+		const before = classic.querySelector(':scope > .sidebar-notifications')
+		if (!before && document.readyState === 'loading') return null
+		return { view: 'classic', sidebar: classic, before }
+	}
+	// Each section of the new sidebar has this attribute, which also gives it
+	// the divider above it.
+	const sections = [
+		...document.querySelectorAll(`section[data-overview-sidebar-item]:not(#${ITEM_ID})`),
+	]
+	const last = sections.at(-1)
+	if (!last) return null
+	// The section goes after the last section, above the PR actions.
+	let before = last.nextElementSibling
+	if (before?.id === ITEM_ID) before = before.nextElementSibling
+	return { view: 'react', sidebar: last.parentElement, before }
 }
 
 async function load(state) {
@@ -602,20 +636,30 @@ function render() {
 		item.remove()
 		return
 	}
-	renderTemplate(section(current), item)
+	renderTemplate(item.dataset.view === 'react' ? reactSection(current) : section(current), item)
 }
 
 // The disclosures' `open` is not bound, so they keep what the reader chose.
 function section(state) {
-	const heading = html`<h3 class="discussion-sidebar-heading text-bold">Workflows</h3>`
+	return html`<h3 class="discussion-sidebar-heading text-bold">Workflows</h3>${sectionBody(state)}`
+}
+
+// The new sidebar styles its sections with generated class names, so this one
+// has its own styles in content.css.
+function reactSection(state) {
+	return html`<h4 class="github-pr-buttons-title">Workflows</h4>
+		<div class="github-pr-buttons-body">${sectionBody(state)}</div>`
+}
+
+function sectionBody(state) {
 	if (state.phase === 'error') {
-		return html`${heading}<span class="f6 color-fg-danger">${state.message}</span>`
+		return html`<span class="f6 color-fg-danger">${state.message}</span>`
 	}
 	const buttons = state.config.buttons.map((button, index) => ({ button, index }))
 	const matched = buttons.filter(({ button }) => button.matched !== false)
 	const unmatched = buttons.filter(({ button }) => button.matched === false)
 	const row = ({ button, index }) => buttonRow(state, button, index)
-	return html`${heading}${matched.map(row)}
+	return html`${matched.map(row)}
 		${
 			unmatched.length === 0
 				? ''
